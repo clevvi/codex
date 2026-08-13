@@ -51,6 +51,7 @@ async fn request_handlers_reject_remote_image_urls() -> Result<()> {
         ]),
         internal_chat_message_metadata_passthrough: None,
     })?;
+    let expected_cwd = mcp.auto_env()?.cwd().clone();
     let requests = [
         (
             "turn/start",
@@ -59,6 +60,18 @@ async fn request_handlers_reject_remote_image_urls() -> Result<()> {
                 "input": [{
                     "type": "image",
                     "url": "HTTP://example.com/start.png",
+                    "detail": "high"
+                }]
+            }),
+        ),
+        (
+            "turn/startIfIdle",
+            json!({
+                "threadId": thread_id,
+                "expectedCwd": expected_cwd,
+                "input": [{
+                    "type": "image",
+                    "url": "https://example.com/idle.png",
                     "detail": "high"
                 }]
             }),

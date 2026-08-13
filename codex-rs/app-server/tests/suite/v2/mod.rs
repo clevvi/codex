@@ -102,6 +102,7 @@ mod thread_unarchive;
 mod thread_unsubscribe;
 mod turn_interrupt;
 mod turn_start;
+mod turn_start_if_idle;
 mod turn_start_zsh_fork;
 mod turn_steer;
 mod view_image;

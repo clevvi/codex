@@ -116,6 +116,7 @@ use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnStartIfIdleParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
@@ -1006,6 +1007,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("turn/start", params).await
+    }
+
+    /// Send a `turn/startIfIdle` JSON-RPC request (v2, experimental).
+    pub async fn send_turn_start_if_idle_request(
+        &mut self,
+        params: TurnStartIfIdleParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("turn/startIfIdle", params).await
     }
 
     /// Start a turn and return its matching typed completion notification.

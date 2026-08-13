@@ -1314,6 +1314,11 @@ impl MessageProcessor {
                     )
                     .await
             }
+            ClientRequest::TurnStartIfIdle { params, .. } => {
+                self.turn_processor
+                    .turn_start_if_idle(&request_id, params)
+                    .await
+            }
             ClientRequest::ThreadInjectItems { params, .. } => {
                 self.turn_processor.thread_inject_items(params).await
             }

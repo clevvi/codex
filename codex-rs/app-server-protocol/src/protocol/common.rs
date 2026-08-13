@@ -116,6 +116,22 @@ macro_rules! experimental_type_entry {
     };
 }
 
+/// Tracks experimental response types independently of `manual_payload_conversion`:
+/// `shared_stable` marks a response type that another stable method already exports,
+/// so this experimental variant must not be treated as newly-experimental.
+#[cfg(test)]
+macro_rules! experimental_response_type_entry {
+    (#[experimental($reason:expr)] $ty:ty, shared_stable) => {
+        ""
+    };
+    (#[experimental($reason:expr)] $ty:ty) => {
+        stringify!($ty)
+    };
+    ($ty:ty $(, $response_schema:ident)?) => {
+        ""
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientRequestSerializationScope {
     Global(&'static str),
@@ -210,6 +226,7 @@ macro_rules! client_request_definitions {
                 $(inspect_params: $inspect_params:tt,)?
                 serialization: $serialization:ident $( ( $($serialization_args:tt)* ) )?,
                 $(manual_payload_conversion: $manual_payload_conversion:ident,)?
+                $(response_schema: $response_schema:ident,)?
                 response: $response:ty,
             }
         ),* $(,)?
@@ -413,7 +430,11 @@ macro_rules! client_request_definitions {
         #[cfg(test)]
         pub(crate) const EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES: &[&str] = &[
             $(
-                experimental_type_entry!($(#[experimental($reason)])? $response),
+                experimental_response_type_entry!(
+                    $(#[experimental($reason)])?
+                    $response
+                    $(, $response_schema)?
+                ),
             )*
         ];
 
@@ -877,6 +898,14 @@ client_request_definitions! {
         params: v2::TurnStartParams,
         inspect_params: true,
         serialization: thread_id(params.thread_id),
+        response: v2::TurnStartResponse,
+    },
+    #[experimental("turn/startIfIdle")]
+    TurnStartIfIdle => "turn/startIfIdle" {
+        params: v2::TurnStartIfIdleParams,
+        serialization: thread_id(params.thread_id),
+        manual_payload_conversion: manual,
+        response_schema: shared_stable,
         response: v2::TurnStartResponse,
     },
     TurnSteer => "turn/steer" {
@@ -2023,6 +2052,88 @@ mod tests {
                 trace: None,
             })
             .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn turn_start_if_idle_round_trips_as_experimental_thread_request() -> Result<()> {
+        let request = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "turn/startIfIdle".to_string(),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "expectedCwd": absolute_path_string("workspace"),
+                "clientUserMessageId": null,
+                "input": [{"type": "text", "text": "queued", "text_elements": []}]
+            })),
+            trace: None,
+        })?;
+
+        assert_eq!(
+            request,
+            ClientRequest::TurnStartIfIdle {
+                request_id: request_id(),
+                params: v2::TurnStartIfIdleParams {
+                    thread_id: "thread-1".to_string(),
+                    expected_cwd: absolute_path("workspace"),
+                    client_user_message_id: None,
+                    input: vec![v2::UserInput::Text {
+                        text: "queued".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+            }
+        );
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "thread-1".to_string(),
+            })
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&request),
+            Some("turn/startIfIdle")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn turn_start_if_idle_schema_is_experimental_only_and_shares_stable_response() -> Result<()> {
+        let stable_dir = tempfile::tempdir()?;
+        crate::export::generate_json_with_experimental(
+            stable_dir.path(),
+            /*experimental_api*/ false,
+        )?;
+        let stable_request = std::fs::read_to_string(stable_dir.path().join("ClientRequest.json"))?;
+        assert!(!stable_request.contains("turn/startIfIdle"));
+        assert!(
+            !stable_dir
+                .path()
+                .join("v2/TurnStartIfIdleParams.json")
+                .exists()
+        );
+        assert!(stable_dir.path().join("v2/TurnStartResponse.json").exists());
+
+        let experimental_dir = tempfile::tempdir()?;
+        crate::export::generate_json_with_experimental(
+            experimental_dir.path(),
+            /*experimental_api*/ true,
+        )?;
+        let experimental_request =
+            std::fs::read_to_string(experimental_dir.path().join("ClientRequest.json"))?;
+        assert!(experimental_request.contains("turn/startIfIdle"));
+        assert!(
+            experimental_dir
+                .path()
+                .join("v2/TurnStartIfIdleParams.json")
+                .exists()
+        );
+        assert!(
+            experimental_dir
+                .path()
+                .join("v2/TurnStartResponse.json")
+                .exists()
         );
         Ok(())
     }

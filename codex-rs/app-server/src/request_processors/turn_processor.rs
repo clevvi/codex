@@ -16,6 +16,8 @@ use codex_skills::system_cache_root_dir;
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
+mod start_if_idle;
+
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
 
@@ -603,18 +605,22 @@ impl TurnRequestProcessor {
         self.outgoing
             .record_request_turn_id(&request_id, &turn_id)
             .await;
-        let turn = Turn {
-            id: turn_id,
-            items: vec![],
-            items_view: TurnItemsView::NotLoaded,
-            error: None,
-            status: TurnStatus::InProgress,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        };
+        Ok(Self::in_progress_turn_response(turn_id))
+    }
 
-        Ok(TurnStartResponse { turn })
+    fn in_progress_turn_response(turn_id: String) -> TurnStartResponse {
+        TurnStartResponse {
+            turn: Turn {
+                id: turn_id,
+                items: vec![],
+                items_view: TurnItemsView::NotLoaded,
+                error: None,
+                status: TurnStatus::InProgress,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        }
     }
 
     async fn build_environment_override(
