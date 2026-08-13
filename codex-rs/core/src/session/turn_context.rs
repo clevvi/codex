@@ -181,6 +181,11 @@ enum TurnMultiAgentRuntime {
     Preview,
 }
 
+pub(super) enum TurnEnvironmentSnapshotSource {
+    Current,
+    Captured(TurnEnvironmentSnapshot),
+}
+
 impl TurnContext {
     pub(crate) fn skills_snapshot(&self) -> Arc<HostSkillsSnapshot> {
         let Some(snapshot) = self.extension_data.get::<HostSkillsSnapshot>() else {
@@ -762,15 +767,17 @@ impl Session {
                 sub_id,
                 session_configuration,
                 updates.final_output_json_schema,
+                TurnEnvironmentSnapshotSource::Current,
             )
             .await)
     }
 
-    async fn new_turn_from_configuration(
+    pub(super) async fn new_turn_from_configuration(
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
+        turn_environment_snapshot: TurnEnvironmentSnapshotSource,
     ) -> Arc<TurnContext> {
         self.new_turn_context_from_configuration(
             sub_id,
@@ -778,6 +785,7 @@ impl Session {
             final_output_json_schema,
             TurnMultiAgentRuntime::ResolveAndStore,
             self.git_enrichment_policy,
+            turn_environment_snapshot,
         )
         .await
     }
@@ -793,8 +801,19 @@ impl Session {
             /*final_output_json_schema*/ None,
             TurnMultiAgentRuntime::Preview,
             GitEnrichmentPolicy::Skip,
+            TurnEnvironmentSnapshotSource::Current,
         )
         .await
+    }
+
+    pub(super) fn cwd_for_turn_environments(
+        session_configuration: &SessionConfiguration,
+        turn_environments: &TurnEnvironmentSnapshot,
+    ) -> AbsolutePathBuf {
+        turn_environments
+            .primary()
+            .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
+            .unwrap_or_else(|| session_configuration.cwd().clone())
     }
 
     #[instrument(name = "turn_context.build", level = "trace", skip_all)]
@@ -805,15 +824,18 @@ impl Session {
         final_output_json_schema: Option<Option<Value>>,
         multi_agent_runtime: TurnMultiAgentRuntime,
         git_enrichment_policy: GitEnrichmentPolicy,
+        turn_environment_snapshot: TurnEnvironmentSnapshotSource,
     ) -> Arc<TurnContext> {
-        let turn_environments = self.services.turn_environments.snapshot().await;
+        let turn_environments = match turn_environment_snapshot {
+            TurnEnvironmentSnapshotSource::Current => {
+                self.services.turn_environments.snapshot().await
+            }
+            TurnEnvironmentSnapshotSource::Captured(turn_environments) => turn_environments,
+        };
         let primary_turn_environment = turn_environments.primary();
         // TODO(anp): Migrate per-turn config and legacy TurnContext cwd consumers to PathUri so
         // a foreign primary environment does not fall back to the session's host cwd.
-        let cwd = primary_turn_environment
-            .as_ref()
-            .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
-            .unwrap_or_else(|| session_configuration.cwd().clone());
+        let cwd = Self::cwd_for_turn_environments(&session_configuration, &turn_environments);
         let per_turn_config = Self::build_per_turn_config(&session_configuration, cwd.clone());
         let model_info = self
             .services
@@ -956,6 +978,7 @@ impl Session {
             sub_id,
             session_configuration,
             /*final_output_json_schema*/ None,
+            TurnEnvironmentSnapshotSource::Current,
         )
         .await
     }

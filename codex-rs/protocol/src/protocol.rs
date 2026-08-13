@@ -55,6 +55,8 @@ use crate::plan_tool::UpdatePlanArgs;
 use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
+use crate::turn_input::StartIfIdlePreconditionSubmission;
+use crate::turn_input::StartIfIdlePreconditions;
 use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
@@ -577,6 +579,13 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
+    /// Submit an idle-only turn start guarded by request-scoped preconditions.
+    TurnInputIfIdleWithPreconditions {
+        request: Box<TurnInputRequest>,
+        preconditions: StartIfIdlePreconditions,
+        reply: oneshot::Sender<CodexResult<StartIfIdlePreconditionSubmission>>,
+    },
+
     /// Apply persistent thread-settings overrides without starting a turn.
     ///
     /// This uses the same submission queue as turn starts so app-server can
@@ -871,6 +880,9 @@ impl Op {
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
+            Self::TurnInputIfIdleWithPreconditions { .. } => {
+                "turn_input_if_idle_with_preconditions"
+            }
             Self::ThreadSettings { .. } => "thread_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
             Self::ExecApproval { .. } => "exec_approval",

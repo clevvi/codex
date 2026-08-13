@@ -341,6 +341,8 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnModerationMetadataEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::turn_input::StartIfIdlePreconditionSubmission;
+use codex_protocol::turn_input::StartIfIdlePreconditions;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -868,6 +870,31 @@ impl SessionIo {
             id: turn_id,
             op: Op::RecoverTurn {
                 thread_settings,
+                reply: reply_tx,
+            },
+            trace,
+            parent_turn_id: None,
+            root_turn_id: None,
+        })
+        .await?;
+        reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
+    }
+
+    /// Submits an ordered guarded idle-start call and waits for Core's
+    /// admission decision without changing the existing turn-input transport.
+    pub(crate) async fn submit_turn_input_if_idle_with_preconditions(
+        &self,
+        mut request: TurnInputRequest,
+        preconditions: StartIfIdlePreconditions,
+    ) -> CodexResult<StartIfIdlePreconditionSubmission> {
+        let id = new_submission_id();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let trace = request.trace.take();
+        self.submit_with_id(Submission {
+            id,
+            op: Op::TurnInputIfIdleWithPreconditions {
+                request: Box::new(request),
+                preconditions,
                 reply: reply_tx,
             },
             trace,
@@ -1627,6 +1654,11 @@ impl Session {
             .session_configuration
             .apply(updates)
             .map(|configuration| configuration.thread_config_snapshot())
+    }
+
+    pub(crate) async fn session_configuration_snapshot(&self) -> SessionConfiguration {
+        let state = self.state.lock().await;
+        state.session_configuration.clone()
     }
 
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {

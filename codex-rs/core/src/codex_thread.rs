@@ -42,6 +42,8 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::RecoverTurnRequest;
+use codex_protocol::turn_input::StartIfIdlePreconditionSubmission;
+use codex_protocol::turn_input::StartIfIdlePreconditions;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::TurnInputMode;
@@ -328,6 +330,23 @@ impl CodexThread {
                 unreachable!("recovered turn submission cannot steer")
             }
         }
+    }
+
+    /// Starts a regular turn only when the thread is idle and all requested
+    /// preconditions match its captured turn context.
+    pub async fn start_turn_if_idle_with_preconditions(
+        &self,
+        request: TurnInputRequest,
+        preconditions: StartIfIdlePreconditions,
+    ) -> CodexResult<StartIfIdlePreconditionSubmission> {
+        self.session
+            .services
+            .agent_control
+            .ensure_execution_capacity_for_turn_start(self)
+            .await?;
+        self.io
+            .submit_turn_input_if_idle_with_preconditions(request, preconditions)
+            .await
     }
 
     /// Steers only if `expected_turn_id` is still the active regular turn.
