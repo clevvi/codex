@@ -368,6 +368,70 @@ async fn start_only_with_preconditions_defaults_preserve_idle_user_input_admissi
 }
 
 #[tokio::test]
+async fn start_only_with_preconditions_defaults_admit_automatic_idle_work_as_pending_input() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    let idle_input = user_message("synthetic idle input");
+
+    let submission = submit_start_only_with_preconditions(
+        &session,
+        SubmittedTurnInput::ResponseItem(idle_input.clone()),
+        StartIfIdlePreconditions::default(),
+    )
+    .await;
+
+    assert_eq!(
+        StartIfIdlePreconditionSubmission::Started {
+            turn_id: "test-submission".to_string(),
+        },
+        submission
+    );
+    let (pending_input, _, _) = session
+        .input_queue
+        .get_pending_input(&session.active_turn)
+        .await;
+    assert_eq!(
+        vec![TurnInput::ResponseItem(idle_input.into())],
+        pending_input
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn start_only_with_preconditions_defaults_reject_automatic_idle_work_in_plan_mode() {
+    let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let mut collaboration_mode = session.collaboration_mode().await;
+    collaboration_mode.mode = ModeKind::Plan;
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration.collaboration_mode = collaboration_mode;
+    }
+
+    let submission = submit_start_only_with_preconditions(
+        &session,
+        SubmittedTurnInput::ResponseItem(user_message("synthetic idle input")),
+        StartIfIdlePreconditions::default(),
+    )
+    .await;
+
+    assert_eq!(
+        StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::PlanMode,
+        },
+        submission
+    );
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        (Vec::<TurnInput>::new(), None, None),
+        session
+            .input_queue
+            .get_pending_input(&session.active_turn)
+            .await
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn start_only_requires_persistence_without_reserving_or_injecting() {
     let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
 
@@ -574,20 +638,21 @@ async fn start_only_rejects_unknown_first_environment_when_ready_primary_cwd_dif
         },
         accepted
     );
-    let active_turn = session.active_turn.lock().await;
-    let turn_context = &active_turn
-        .as_ref()
-        .and_then(|active_turn| active_turn.task.as_ref())
-        .expect("accepted turn should be active")
-        .turn_context;
-    assert_eq!(
-        Some(ready_cwd),
-        turn_context
-            .environments
-            .primary()
-            .and_then(|environment| environment.cwd().to_abs_path().ok())
-    );
-    drop(active_turn);
+    {
+        let active_turn = session.active_turn.lock().await;
+        let turn_context = &active_turn
+            .as_ref()
+            .and_then(|active_turn| active_turn.task.as_ref())
+            .expect("accepted turn should be active")
+            .turn_context;
+        assert_eq!(
+            Some(ready_cwd),
+            turn_context
+                .environments
+                .primary()
+                .and_then(|environment| environment.cwd().to_abs_path().ok())
+        );
+    }
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
@@ -951,6 +1016,12 @@ async fn start_only_with_preconditions_rejects_pending_trigger_turn_before_reser
 /// first: the function observes an empty mailbox, blocks acquiring the
 /// lock, and only reserves once this test releases it.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "holding this guard across the yield forces the submission's own active_turn \
+              reservation to happen only after the trigger turn is enqueued below, which is \
+              what routes it through the post-reservation mailbox recheck under test"
+)]
 async fn start_only_with_preconditions_rejects_pending_trigger_turn_after_reservation_race() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
     let reservation_guard = session.active_turn.lock().await;
@@ -984,15 +1055,16 @@ async fn start_only_with_preconditions_rejects_pending_trigger_turn_after_reserv
     // The rejected reservation was cleared, but yielding to the pending
     // trigger turn appropriately starts a new turn for it rather than
     // leaving the thread idle with mailbox work still waiting.
-    let active_turn = session.active_turn.lock().await;
-    assert!(
-        active_turn
-            .as_ref()
-            .and_then(|active_turn| active_turn.task.as_ref())
-            .is_some(),
-        "the pending trigger turn should have started its own turn"
-    );
-    drop(active_turn);
+    {
+        let active_turn = session.active_turn.lock().await;
+        assert!(
+            active_turn
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .is_some(),
+            "the pending trigger turn should have started its own turn"
+        );
+    }
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
