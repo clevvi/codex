@@ -509,8 +509,9 @@ async fn start_only_disallows_plan_mode_for_user_input_without_reserving_or_inje
 async fn start_only_clears_cwd_mismatch_reservation_before_matching_request() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
     let matching_cwd = session.thread_config_snapshot().await.cwd().clone();
-    let mismatched_cwd =
-        AbsolutePathBuf::from_absolute_path("/tmp/other-cwd").expect("absolute cwd");
+    let mismatch_workspace = tempfile::tempdir().expect("create workspace");
+    let mismatched_cwd = AbsolutePathBuf::try_from(mismatch_workspace.path().join("other-cwd"))
+        .expect("absolute cwd");
 
     let rejected = submit_start_only_with_preconditions(
         &session,

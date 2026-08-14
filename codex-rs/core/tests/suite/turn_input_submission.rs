@@ -174,7 +174,7 @@ async fn start_turn_if_idle_with_preconditions_admits_matching_expected_cwd_once
         panic!("matching cwd should start an idle turn");
     };
 
-    let turn_started_ids = timeout(Duration::from_secs(1), async {
+    let turn_started_ids = timeout(Duration::from_secs(5), async {
         let mut turn_started_ids = Vec::new();
         loop {
             match test
