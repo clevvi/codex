@@ -2544,7 +2544,7 @@ struct Config {
 
 For server-initiated request payloads, annotate the field the same way so schema generation treats it as experimental, and make sure app-server omits that field when the client did not opt into `experimentalApi`.
 
-5. Regenerate protocol fixtures:
+1. Regenerate protocol fixtures:
 
    ```bash
    just write-app-server-schema
@@ -2552,7 +2552,7 @@ For server-initiated request payloads, annotate the field the same way so schema
    just write-app-server-schema --experimental
    ```
 
-6. Verify the protocol crate:
+2. Verify the protocol crate:
 
    ```bash
    just test -p codex-app-server-protocol
