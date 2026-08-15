@@ -167,6 +167,22 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
+/// Params for the experimental `turn/startIfIdle` request.
+///
+/// Admission is atomic and exact: the thread must be idle, persistence-enabled, not in
+/// Plan mode, and its effective turn cwd must match `expected_cwd`. Unlike `turn/start`,
+/// this request never steers, retries, or applies overrides.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnStartIfIdleParams {
+    pub thread_id: String,
+    pub expected_cwd: AbsolutePathBuf,
+    #[ts(optional = nullable)]
+    pub client_user_message_id: Option<String>,
+    pub input: Vec<UserInput>,
+}
+
 #[derive(
     Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
 )]

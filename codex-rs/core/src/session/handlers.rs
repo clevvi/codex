@@ -574,6 +574,21 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
+                Op::TurnInputIfIdleWithPreconditions {
+                    request,
+                    preconditions,
+                    reply,
+                } => {
+                    let result = turn_input::start_if_idle_with_preconditions(
+                        &sess,
+                        *request,
+                        preconditions,
+                        sub.id.clone(),
+                    )
+                    .await;
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::ThreadSettings { thread_settings } => {
                     thread_settings::update(&sess, sub.id.clone(), thread_settings).await;
                     false

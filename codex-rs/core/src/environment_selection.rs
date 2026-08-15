@@ -431,6 +431,22 @@ impl ThreadEnvironments {
         .boxed()
     }
 
+    /// Maps a selected environment plus its already-computed resolution into
+    /// snapshot state, shared by both the awaiting and cached snapshot paths.
+    fn resolved_environment_state(
+        environment: &SelectedTurnEnvironment,
+        resolved: Option<TurnEnvironmentResult>,
+    ) -> Option<TurnEnvironmentState> {
+        TurnEnvironmentState::from_resolution(
+            StartingTurnEnvironment {
+                selection: environment.selection.clone(),
+                config: environment.config.clone(),
+                resolution: environment.resolution.clone(),
+            },
+            resolved,
+        )
+    }
+
     #[tracing::instrument(name = "environments.snapshot", skip_all)]
     pub(crate) async fn snapshot(&self) -> TurnEnvironmentSnapshot {
         let selected = self.environments.load_full();
@@ -441,17 +457,26 @@ impl ThreadEnvironments {
             } else {
                 Some(environment.resolution.clone().await)
             };
-            if let Some(environment) = TurnEnvironmentState::from_resolution(
-                StartingTurnEnvironment {
-                    selection: environment.selection.clone(),
-                    config: environment.config.clone(),
-                    resolution: environment.resolution.clone(),
-                },
-                resolved,
-            ) {
+            if let Some(environment) = Self::resolved_environment_state(environment, resolved) {
                 environments.push(environment);
             }
         }
+        TurnEnvironmentSnapshot { environments }
+    }
+
+    /// Captures only resolutions that are already available, without waiting
+    /// for or replacing a selected environment's connection task.
+    pub(crate) fn cached_snapshot(&self) -> TurnEnvironmentSnapshot {
+        let selected = self.environments.load_full();
+        let environments = selected
+            .iter()
+            .filter_map(|environment| {
+                Self::resolved_environment_state(
+                    environment,
+                    environment.resolution.clone().now_or_never(),
+                )
+            })
+            .collect();
         TurnEnvironmentSnapshot { environments }
     }
 
@@ -559,6 +584,18 @@ impl TurnEnvironmentSnapshot {
 
     pub(crate) fn primary(&self) -> Option<&TurnEnvironment> {
         self.turn_environments().next()
+    }
+
+    /// Reports whether a still-connecting selection precedes the entry
+    /// `primary()` currently returns, so resolving it could later displace
+    /// today's primary. Selection order is preserved in `environments`, so
+    /// the earliest surviving entry decides this: if it is still starting,
+    /// which environment becomes primary cannot be known without waiting.
+    pub(crate) fn primary_readiness_is_ambiguous(&self) -> bool {
+        matches!(
+            self.environments.first(),
+            Some(TurnEnvironmentState::Starting(_))
+        )
     }
 
     pub(crate) fn local(&self) -> Option<&TurnEnvironment> {
@@ -1195,6 +1232,68 @@ url = "ws://127.0.0.1:8765"
             .expect("expected the replacement environment to be starting");
         assert_eq!(replacement.selection, selection);
         assert!(!failed_resolution.ptr_eq(&replacement.resolution));
+    }
+
+    #[tokio::test]
+    async fn cached_snapshot_does_not_retry_a_failed_remote_selection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failed remote listener");
+        let manager = Arc::new(
+            EnvironmentManager::create_for_tests(
+                Some(format!(
+                    "ws://{}",
+                    listener.local_addr().expect("listener address")
+                )),
+                Some(test_runtime_paths()),
+            )
+            .await,
+        );
+        let selection = TurnEnvironmentSelection {
+            environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+            cwd: PathUri::from_abs_path(&AbsolutePathBuf::current_dir().expect("cwd")),
+            workspace_roots: Vec::new(),
+        };
+        let environments = ThreadEnvironments::new(
+            Arc::clone(&manager),
+            crate::shell::default_user_shell(),
+            test_environment_config(),
+            ShellSnapshot::disabled(),
+            TurnEnvironmentSnapshot::default(),
+            /*non_blocking_snapshots*/ true,
+        );
+        let (event_tx, event_rx) = async_channel::unbounded();
+        environments.start_connection_event_forwarding(event_tx);
+        environments
+            .update_selections(std::slice::from_ref(&selection), &test_environment_config());
+        let failed_resolution = environments.environments.load()[0].resolution.clone();
+        let (stream, _) = timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("remote should make its initial connection attempt")
+            .expect("accept initial remote connection");
+        drop(stream);
+        assert!(
+            failed_resolution.clone().await.is_err(),
+            "initial remote resolution should fail"
+        );
+        tokio::task::yield_now().await;
+        while event_rx.try_recv().is_ok() {}
+
+        let snapshot = environments.cached_snapshot();
+
+        assert!(snapshot.turn_environments().next().is_none());
+        assert!(snapshot.starting().next().is_none());
+        assert!(
+            failed_resolution.ptr_eq(&environments.environments.load()[0].resolution),
+            "capturing a rejected-start snapshot must not detach or replace the resolution"
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "capturing a rejected-start snapshot must not open a replacement connection"
+        );
     }
 
     #[tokio::test]

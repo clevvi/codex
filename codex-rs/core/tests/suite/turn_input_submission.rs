@@ -1,5 +1,7 @@
 use codex_core::NotSubmittedReason;
 use codex_core::RecoverTurnRequest;
+use codex_core::StartIfIdlePreconditionSubmission;
+use codex_core::StartIfIdlePreconditions;
 use codex_core::StartIfIdleSubmission;
 use codex_core::SteerSubmission;
 use codex_core::TurnInput;
@@ -144,6 +146,55 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
     assert_eq!(user_input_groups.len(), 1);
     assert_eq!(user_input_groups[0].len(), 1);
     assert!(user_input_groups[0][0].starts_with("<environment_context>"));
+}
+
+#[tokio::test]
+async fn start_turn_if_idle_with_preconditions_admits_matching_expected_cwd_once() {
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let test = test_codex()
+        .build_with_auto_env(&server)
+        .await
+        .expect("build turn-input submission session");
+    let expected_cwd = test.codex.config_snapshot().await.cwd().clone();
+
+    let submission = test
+        .codex
+        .start_turn_if_idle_with_preconditions(
+            user_message_request("admitted matching cwd"),
+            StartIfIdlePreconditions::default().with_expected_cwd(expected_cwd),
+        )
+        .await
+        .expect("matching cwd should start an idle turn");
+    let StartIfIdlePreconditionSubmission::Started { turn_id } = submission else {
+        panic!("matching cwd should start an idle turn");
+    };
+
+    let turn_started_ids = timeout(Duration::from_secs(5), async {
+        let mut turn_started_ids = Vec::new();
+        loop {
+            match test
+                .codex
+                .next_event()
+                .await
+                .expect("event stream should remain open")
+                .msg
+            {
+                EventMsg::TurnStarted(event) => turn_started_ids.push(event.turn_id),
+                EventMsg::TurnComplete(_) => break turn_started_ids,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("turn should complete");
+    assert_eq!(vec![turn_id], turn_started_ids);
+
+    response.single_request();
 }
 
 /// Concurrent submissions must start exactly one turn and steer the other message.

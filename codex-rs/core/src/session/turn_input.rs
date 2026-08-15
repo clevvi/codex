@@ -13,6 +13,7 @@ use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::thread_settings;
 use super::turn_context::TurnContext;
+use super::turn_context::TurnEnvironmentSnapshotSource;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::MailboxParentProvenance;
@@ -29,6 +30,9 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::NotSubmittedReason;
+use codex_protocol::turn_input::StartIfIdlePreconditionNotSubmittedReason;
+use codex_protocol::turn_input::StartIfIdlePreconditionSubmission;
+use codex_protocol::turn_input::StartIfIdlePreconditions;
 use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
@@ -321,6 +325,160 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    let turn_id = admit_turn_task(
+        session,
+        turn_context,
+        input,
+        additional_context,
+        responsesapi_client_metadata,
+        can_start_root_turn,
+        &turn_state,
+        submission_id,
+        is_automatic_idle_work,
+    )
+    .await;
+    Ok(TurnInputSubmission::Started { turn_id })
+}
+
+pub(super) async fn start_if_idle_with_preconditions(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    preconditions: StartIfIdlePreconditions,
+    submission_id: String,
+) -> CodexResult<StartIfIdlePreconditionSubmission> {
+    let TurnInputRequest {
+        input,
+        thread_settings,
+        start,
+        additional_context,
+        responsesapi_client_metadata,
+        ..
+    } = request;
+    if thread_settings != ThreadSettingsOverrides::default() {
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::ThreadSettingsUnsupported,
+        });
+    }
+    if preconditions.requires_persistence() && session.live_thread().is_none() {
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::PersistenceDisabled,
+        });
+    }
+    if session.input_queue.has_trigger_turn_mailbox_items().await {
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::PendingTriggerTurn,
+        });
+    }
+
+    let turn_state = {
+        let mut active_turn = session.active_turn.lock().await;
+        if active_turn.is_some() {
+            return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+                reason: StartIfIdlePreconditionNotSubmittedReason::NotIdle,
+            });
+        }
+        let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+        Arc::clone(&active_turn.turn_state)
+    };
+
+    if session.input_queue.has_trigger_turn_mailbox_items().await {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        session.maybe_start_turn_for_pending_work().await;
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::PendingTriggerTurn,
+        });
+    }
+
+    let session_configuration = session.session_configuration_snapshot().await;
+    let turn_environments = session.services.turn_environments.cached_snapshot();
+    // The turn context this admission builds always uses this captured
+    // snapshot's primary, so an unresolved earlier selection makes which
+    // environment becomes primary ambiguous regardless of which
+    // preconditions were requested.
+    if turn_environments.primary_readiness_is_ambiguous() {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::EnvironmentNotReady,
+        });
+    }
+    let effective_cwd =
+        Session::cwd_for_turn_environments(&session_configuration, &turn_environments);
+    let plan_mode = session_configuration.collaboration_mode.mode == ModeKind::Plan;
+    if (preconditions.disallows_plan_mode() || !has_nonempty_user_input(&input)) && plan_mode {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::PlanMode,
+        });
+    }
+    if preconditions
+        .expected_cwd()
+        .is_some_and(|expected_cwd| expected_cwd != &effective_cwd)
+    {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        return Ok(StartIfIdlePreconditionSubmission::NotSubmitted {
+            reason: StartIfIdlePreconditionNotSubmittedReason::ExpectedCwdMismatch,
+        });
+    }
+
+    let can_start_root_turn = start.parent_turn_id.is_none() && start.root_turn_id.is_none();
+    let TurnStartOptions {
+        final_output_json_schema,
+        parent_turn_id,
+        root_turn_id,
+    } = start;
+    let turn_context = session
+        .new_turn_from_configuration(
+            submission_id.clone(),
+            session_configuration,
+            Some(final_output_json_schema),
+            TurnEnvironmentSnapshotSource::Captured(turn_environments),
+        )
+        .await;
+    if let Some(parent_turn_id) = parent_turn_id {
+        turn_context
+            .turn_metadata_state
+            .set_parent_turn_id(parent_turn_id);
+    }
+    if let Some(root_turn_id) = root_turn_id {
+        turn_context
+            .turn_metadata_state
+            .set_root_turn_id(root_turn_id);
+    }
+    let is_automatic_idle_work = !has_nonempty_user_input(&input);
+    let turn_id = admit_turn_task(
+        session,
+        turn_context,
+        input,
+        additional_context,
+        responsesapi_client_metadata,
+        can_start_root_turn,
+        &turn_state,
+        submission_id,
+        is_automatic_idle_work,
+    )
+    .await;
+    Ok(StartIfIdlePreconditionSubmission::Started { turn_id })
+}
+
+/// Shared success tail for both idle-start paths: applies start-only
+/// metadata, merges additional context, and enqueues or starts the task.
+/// Returns the submission id both callers use as the started turn id.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bundles the fields both idle-start admission paths need for the identical success tail"
+)]
+async fn admit_turn_task(
+    session: &Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    input: SubmittedTurnInput,
+    additional_context: BTreeMap<String, AdditionalContextEntry>,
+    responsesapi_client_metadata: Option<HashMap<String, String>>,
+    can_start_root_turn: bool,
+    turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    submission_id: String,
+    is_automatic_idle_work: bool,
+) -> String {
+    let has_user_input = has_nonempty_user_input(&input);
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
         turn_context
             .turn_metadata_state
@@ -366,9 +524,7 @@ async fn start_if_idle(
             MailboxParentProvenance::Ignore,
         )
         .await;
-    Ok(TurnInputSubmission::Started {
-        turn_id: submission_id,
-    })
+    submission_id
 }
 
 async fn steer(

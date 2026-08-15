@@ -7,6 +7,7 @@ use crate::protocol::NonSteerableTurnKind;
 use crate::protocol::ThreadSettingsOverrides;
 use crate::protocol::W3cTraceContext;
 use crate::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -47,6 +48,48 @@ pub struct RecoverTurnRequest {
     pub turn_id: String,
     pub thread_settings: ThreadSettingsOverrides,
     pub trace: Option<W3cTraceContext>,
+}
+
+/// Guards evaluated atomically when `start_turn_if_idle_with_preconditions`
+/// attempts admission.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct StartIfIdlePreconditions {
+    expected_cwd: Option<AbsolutePathBuf>,
+    require_persistence: bool,
+    disallow_plan_mode: bool,
+}
+
+impl StartIfIdlePreconditions {
+    /// Requires admission to match this exact effective turn cwd.
+    pub fn with_expected_cwd(mut self, expected_cwd: AbsolutePathBuf) -> Self {
+        self.expected_cwd = Some(expected_cwd);
+        self
+    }
+
+    /// Requires admission to find an attached live persistence thread.
+    pub fn require_persistence(mut self) -> Self {
+        self.require_persistence = true;
+        self
+    }
+
+    /// Rejects a turn whose effective collaboration mode is Plan.
+    pub fn disallow_plan_mode(mut self) -> Self {
+        self.disallow_plan_mode = true;
+        self
+    }
+
+    pub fn expected_cwd(&self) -> Option<&AbsolutePathBuf> {
+        self.expected_cwd.as_ref()
+    }
+
+    pub fn requires_persistence(&self) -> bool {
+        self.require_persistence
+    }
+
+    pub fn disallows_plan_mode(&self) -> bool {
+        self.disallow_plan_mode
+    }
 }
 
 impl TurnInputRequest {
@@ -167,6 +210,47 @@ pub enum StartIfIdleSubmission {
     NotSubmitted { reason: NotSubmittedReason },
 }
 
+/// What Core did with input submitted through
+/// `start_turn_if_idle_with_preconditions`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StartIfIdlePreconditionSubmission {
+    /// Core started a turn after every requested precondition passed.
+    Started { turn_id: String },
+    /// Core rejected the input without applying settings or start options.
+    NotSubmitted {
+        reason: StartIfIdlePreconditionNotSubmittedReason,
+    },
+}
+
+/// Why Core did not accept preconditioned idle-start input for turn processing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StartIfIdlePreconditionNotSubmittedReason {
+    /// The thread already had an active or reserved turn.
+    NotIdle,
+
+    /// Higher-priority trigger-turn mailbox input took precedence.
+    PendingTriggerTurn,
+
+    /// Persistence was required but the session has no live persistence thread.
+    PersistenceDisabled,
+
+    /// The request disallowed a turn whose effective collaboration mode is Plan.
+    PlanMode,
+
+    /// The exact expected cwd differed from the captured effective turn cwd.
+    ExpectedCwdMismatch,
+
+    /// A selected environment's readiness was still pending in a way that could
+    /// change which environment becomes primary, so which cwd to compare against
+    /// `expected_cwd` was ambiguous without waiting.
+    EnvironmentNotReady,
+
+    /// Preconditioned idle starts do not accept persistent thread-settings overrides.
+    ThreadSettingsUnsupported,
+}
+
 /// What Core did with input submitted only for steering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SteerSubmission {
@@ -206,3 +290,7 @@ pub enum NotSubmittedReason {
     /// `start_or_steer_turn` or `steer_turn` reached a steering path with empty user input.
     EmptyInput,
 }
+
+#[cfg(test)]
+#[path = "turn_input_tests.rs"]
+mod tests;

@@ -296,6 +296,7 @@ use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnStartIfIdleParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
@@ -337,6 +338,9 @@ use codex_core::NewThread;
 use codex_core::NotSubmittedReason;
 #[cfg(test)]
 use codex_core::SessionMeta;
+use codex_core::StartIfIdlePreconditionNotSubmittedReason;
+use codex_core::StartIfIdlePreconditionSubmission;
+use codex_core::StartIfIdlePreconditions;
 use codex_core::StartThreadOptions;
 use codex_core::SteerSubmission;
 use codex_core::ThreadConfigSnapshot;

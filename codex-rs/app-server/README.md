@@ -199,6 +199,7 @@ Example with notification opt-out:
 - `thread/backgroundTerminals/terminate` — terminate one running background terminal by app-server `processId` (experimental; requires `capabilities.experimentalApi`); returns whether a process was terminated.
 - `thread/rollback` — deprecated and will be removed soon. Drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success. Paginated threads do not support rollback.
 - `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` supplies the default roots for newly resolved environment selections. Explicit `environments[].runtimeWorkspaceRoots` override that fallback with environment-native absolute paths. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode". Deprecated experimental `multiAgentMode` is ignored; Ultra reasoning effort selects proactive behavior.
+- `turn/startIfIdle` — atomically start a persistent, non-Plan thread only when it is idle and its effective cwd matches `expectedCwd` (experimental; requires `capabilities.experimentalApi`); see [Start a turn only when idle](#example-start-a-turn-only-when-idle-experimental).
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
 - `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
@@ -1167,6 +1168,30 @@ Use `thread/backgroundTerminals/terminate` to terminate one running background t
 ```json
 { "method": "thread/backgroundTerminals/terminate", "id": 37, "params": { "threadId": "thr_123", "processId": "42" } }
 { "id": 37, "result": { "terminated": true } }
+```
+
+### Example: Start a turn only when idle (experimental)
+
+`turn/startIfIdle` requires `capabilities.experimentalApi: true` and admits input only when every
+precondition holds atomically: the thread is idle (no active or pending turn), persistence is
+enabled (not an ephemeral thread), the effective collaboration mode is not Plan, and the thread's
+effective turn cwd exactly matches the required `expectedCwd`. Unlike `turn/start`, this request
+never steers an active turn, never retries, and never applies thread-settings overrides. On
+success it returns the same `TurnStartResponse` as `turn/start`, carrying Core's actual admitted
+turn id — admission only, not model completion or persistence-confirmed completion. On rejection
+it returns JSON-RPC code `-32600` with one of these exact messages: `busy`, `pending trigger turn`,
+`plan mode`, `expectedCwd mismatch`, `persistence disabled`, or `environment not ready`.
+
+```json
+{ "method": "turn/startIfIdle", "id": 38, "params": {
+    "threadId": "thr_123",
+    "expectedCwd": "/Users/me/project",
+    "clientUserMessageId": "client_msg_125",
+    "input": [ { "type": "text", "text": "Run tests" } ]
+} }
+{ "id": 38, "result": { "turn": {
+    "id": "turn_789", "status": "inProgress", "items": [], "error": null
+} } }
 ```
 
 ### Example: Steer an active turn
@@ -2493,6 +2518,8 @@ At runtime, clients must send `initialize` with `capabilities.experimentalApi = 
 
 3. In `app-server-protocol/src/protocol/common.rs`, keep the method stable and use `inspect_params: true` when only some fields are experimental (like `thread/start`). If the entire method is experimental, annotate the method variant with `#[experimental("method/name")]`.
 
+4. If an experimental method reuses a response type already exported by stable methods, set `response_schema: shared_stable` so stable schema generation retains that shared type.
+
 Enum variants can be gated too:
 
 ```rust
@@ -2517,7 +2544,7 @@ struct Config {
 
 For server-initiated request payloads, annotate the field the same way so schema generation treats it as experimental, and make sure app-server omits that field when the client did not opt into `experimentalApi`.
 
-4. Regenerate protocol fixtures:
+1. Regenerate protocol fixtures:
 
    ```bash
    just write-app-server-schema
@@ -2525,7 +2552,7 @@ For server-initiated request payloads, annotate the field the same way so schema
    just write-app-server-schema --experimental
    ```
 
-5. Verify the protocol crate:
+2. Verify the protocol crate:
 
    ```bash
    just test -p codex-app-server-protocol
