@@ -128,6 +128,10 @@ enum CommandExecutionApprovalPresentation {
     Command(CommandExecutionCompletionItem),
 }
 
+#[cfg(test)]
+#[path = "turn_complete_persistence_tests.rs"]
+mod turn_complete_persistence_tests;
+
 #[derive(Debug, PartialEq)]
 struct CommandExecutionCompletionItem {
     plugin_id: Option<String>,
